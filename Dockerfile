@@ -1,6 +1,6 @@
 FROM quay.io/keycloak/keycloak:25.0.6
 
-COPY ./theme/custom /opt/keycloak/themes/custom
+COPY theme/custom /opt/keycloak/themes/custom
 
 ENV KC_THEME=custom
 
