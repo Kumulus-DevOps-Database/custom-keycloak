@@ -1,0 +1,110 @@
+trigger:
+  branches:
+    include:
+      - master
+
+variables:
+  CONTAINER_REGISTRY: 'acredugenai.azurecr.io' 
+  AZURE_SUBSCRIPTION: 'kml-connection-secret'
+  AKS_CLUSTER: 'aks-edu-genai-eastus2-001'
+  RESOURCE_GROUP: 'rg-edu-genai-eastus2'
+  KEY_VAULT: 'kv-edu-genai-eastus2-002'
+  NAMESPACE: 'dev'
+  APP_NAME: 'kumulusaikeycloak'
+  PROXY: 'auth-c8d0fgcwcvbdasc5.z02.azurefd.net'
+  TAG: $(Build.BuildId)
+
+stages:
+  - stage: build
+    displayName: Build
+    jobs:
+      - job: docker_build
+        displayName: Docker Build
+        steps:
+          - checkout: self
+            displayName: Checkout Repo
+
+          - task: AzureCLI@2
+            displayName: Build and Push Docker Image
+            inputs:
+              azureSubscription: $(AZURE_SUBSCRIPTION)
+              scriptType: 'pscore'
+              scriptLocation: 'inlineScript'
+              inlineScript: az acr build --image openai/$(APP_NAME):$(TAG) --registry $(CONTAINER_REGISTRY) --file Dockerfile .
+
+          - task: replacetokens@6
+            displayName: Replace Tokens k8s manifests
+            inputs:
+              root: '$(System.DefaultWorkingDirectory)/k8s'
+              sources: '*.yaml'
+              addBOM: true
+              missingVarAction: 'keep'
+
+          - task: CopyFiles@2
+            displayName: Copy Files to Staging Directory
+            inputs:
+              SourceFolder: '$(System.DefaultWorkingDirectory)/k8s'
+              Contents: '**'
+              TargetFolder: '$(Build.ArtifactStagingDirectory)'
+
+          - task: PublishBuildArtifacts@1
+            displayName: Publish Build Artifacts
+            inputs:
+              PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+              ArtifactName: 'k8s'
+
+  - stage: deploy
+    displayName: Deploy
+    jobs:
+      - job: aks_deploy
+        displayName: AKS Deploy
+        steps:
+          - task: DownloadBuildArtifacts@1
+            displayName: Download Build Artifacts
+            inputs:
+              buildType: 'current'
+              downloadType: 'single'
+              artifactName: 'k8s'
+              downloadPath: '$(System.DefaultWorkingDirectory)'
+
+          - task: KubeloginInstaller@0
+            displayName: Install kubelogin
+            inputs:
+              kubeloginVersion: 'latest'
+
+          - task: KubernetesManifest@1
+            displayName: Apply Secrets
+            inputs:
+              action: 'deploy'
+              connectionType: 'azureResourceManager'
+              azureSubscriptionConnection: $(AZURE_SUBSCRIPTION)
+              azureResourceGroup: $(RESOURCE_GROUP)
+              kubernetesCluster: $(AKS_CLUSTER)
+              useClusterAdmin: true
+              namespace: $(NAMESPACE)
+              manifests: '$(System.DefaultWorkingDirectory)/k8s/secrets.yaml'
+
+          - task: KubernetesManifest@1
+            displayName: Apply Deployment
+            inputs:
+              action: 'deploy'
+              connectionType: 'azureResourceManager'
+              azureSubscriptionConnection: $(AZURE_SUBSCRIPTION)
+              azureResourceGroup: $(RESOURCE_GROUP)
+              kubernetesCluster: $(AKS_CLUSTER)
+              useClusterAdmin: true
+              namespace: $(NAMESPACE)
+              manifests: '$(System.DefaultWorkingDirectory)/k8s/deployment.yaml'
+
+          - task: KubernetesManifest@1
+            displayName: Apply Service
+            inputs:
+              action: 'deploy'
+              connectionType: 'azureResourceManager'
+              azureSubscriptionConnection: $(AZURE_SUBSCRIPTION)
+              azureResourceGroup: $(RESOURCE_GROUP)
+              kubernetesCluster: $(AKS_CLUSTER)
+              useClusterAdmin: true
+              namespace: $(NAMESPACE)
+              manifests: '$(System.DefaultWorkingDirectory)/k8s/service.yaml'
+
